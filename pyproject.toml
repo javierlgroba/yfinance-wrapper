@@ -1,0 +1,65 @@
+[project]
+name = "yfinance-wrapper"
+version = "0.0.1"
+description = "HTTP API that wraps yfinance to provide a interface to get stock data when not using python."
+authors = [{ name = "javierlgroba", email = "javier.lopezgr@gmail.com" }]
+keywords = ["api", "yfinance"]
+readme = "README.md"
+classifiers = [
+    "Intended Audience :: Developers",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "pydantic",
+    "requests_cache",
+    "requests_ratelimiter",
+    "uvicorn",
+    "yfinance[nospam]",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+serve = "yfinance_wrapper.app:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["yfinance_wrapper"]
+
+[tool.rye]
+dev-dependencies = ["black", "isort", "ruff"]
+
+[tool.isort]
+profile = "black"
+
+[tool.black]
+line-length = 120
+
+[tool.ruff]
+line-length = 120
+
+[tool.mypy]
+namespace_packages = true
+explicit_package_bases = true
+ignore_missing_imports = true
+no_implicit_optional = true
+check_untyped_defs = true
+warn_return_any = true
+show_error_codes = true
+warn_unused_ignores = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unreachable = true
+warn_no_return = true
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+ignore_errors = true

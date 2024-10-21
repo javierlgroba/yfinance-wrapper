@@ -1,2 +1,3 @@
 # yfinance-wrapper
-Wrapper arround python lib yfinance to use the lib from outside python
+
+HTTP API that wraps yfinance to provide a interface to get stock data when not using python.
