@@ -33,8 +33,19 @@ allow-direct-references = true
 [tool.hatch.build.targets.wheel]
 packages = ["yfinance_wrapper"]
 
-[tool.rye]
-dev-dependencies = ["black", "isort", "ruff"]
+[tool.hatch.envs.develop]
+dependencies = ["black", "isort", "ruff"]
+
+[tool.hatch.envs.production]
+dev-mode = false
+dependencies = [
+    "fastapi",
+    "pydantic",
+    "requests_cache",
+    "requests_ratelimiter",
+    "uvicorn",
+    "yfinance[nospam]",
+]
 
 [tool.isort]
 profile = "black"

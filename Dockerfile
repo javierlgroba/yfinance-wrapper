@@ -9,7 +9,7 @@ RUN python -m pip install --upgrade pip setuptools && \
 COPY . .
 
 # Install dependencies using hatch
-RUN hatch env create
+RUN hatch env create production
 
 # Expose the port that the app runs on
 EXPOSE 8000
