@@ -1,6 +1,7 @@
+from math import e
 import os
 from datetime import datetime, timezone
-from typing import Any, Optional, Type
+from typing import Any, Optional, Type, List
 
 import pandas as pd
 import uvicorn
@@ -87,16 +88,18 @@ def read_ticker(ticker: str) -> JSONResponse:
     if "longName" not in info:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{ticker} not found")
     fast_info = ticker_data.fast_info
+    print(info)
+    print(fast_info)
     day_change = None
-    if "lastPrice" in fast_info and "previousClose" in fast_info:
-        day_change = fast_info["lastPrice"] - fast_info["previousClose"]
+    if fast_info.get("currentPrice", None) is not None and fast_info.get("previousClose", None) is not None:
+        day_change = fast_info["currentPrice"] - fast_info["previousClose"]
 
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content={
             "ticker": ticker,
             "name": key(info, "longName"),
-            "price": key(fast_info, "lastPrice"),
+            "price": key(fast_info, "currentPrice"),
             "currency": key(fast_info, "currency"),
             "previous_close": key(info, "previousClose"),
             "open": key(fast_info, "open"),
@@ -206,40 +209,112 @@ class Portfolio(BaseModel):
         return trades
 
 
-@app.post("/portfolio/history", status_code=status.HTTP_201_CREATED)
-def read_portfolio_history(request: Portfolio, params: HistoryParams = Depends()) -> JSONResponse:
-    total_owned = {}
-    tickers = [k for k in request.trades.keys()]
+def fetch_market_data(tickers: List[str], params: HistoryParams):
     hist = yf.download(tickers, period=params.period, interval=params.interval, session=session)
     if hist.empty:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Cannot fetch data for {tickers}")
-    market_values = hist["Adj Close"].to_dict()
-    for ticker, values in market_values.items():
-        close_prices = list(values.items())
-        if pd.isna(close_prices[-1][1]):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"No data found for {ticker}")
-        trades = request.trades[ticker]
+    return hist["Adj Close"]
+
+
+def process_market_data(market_data: pd.DataFrame):
+    market_values = {}
+    for date, row in market_data.iterrows():
+        for ticker, price in row.items():
+            if pd.isna(price) or pd.isnull(price):
+                continue
+            if date not in market_values:
+                market_values[date] = {}
+            market_values[date][ticker] = price
+    return market_values
+
+
+def calculate_total_owned(trades: dict, market_values: dict):
+    total_owned = {}
+    for ticker, trade_list in trades.items():
+        sorted_trades = sorted(trade_list, key=lambda x: x.date_time)
         trade_idx = 0
         quantity = 0.0
-        for i in range(len(close_prices)):
-            before = close_prices[i][0]
-            after = close_prices[i + 1][0] if i + 1 < len(close_prices) else datetime.now(tz=timezone.utc)
+        market_values_as_list = list(market_values.items())
+        for i in range(len(market_values_as_list)):
+            before = market_values_as_list[i][0]
+            after = (
+                market_values_as_list[i + 1][0] if i + 1 < len(market_values_as_list) else datetime.now(tz=timezone.utc)
+            )
             if (
-                trade_idx < len(trades)
-                and trades[trade_idx].date_time >= before
-                and trades[trade_idx].date_time < after
+                trade_idx < len(sorted_trades)
+                and sorted_trades[trade_idx].date_time >= before
+                and sorted_trades[trade_idx].date_time < after
             ):
-                quantity = trades[trade_idx].quantity
+                quantity += sorted_trades[trade_idx].quantity
                 trade_idx += 1
             if before not in total_owned:
-                total_owned[before] = 0
-            close_price = close_prices[i][1]
-            total_owned[before] += (
-                (quantity * close_price) if not pd.isna(close_price) or not pd.isnull(close_price) else 0
-            )
+                total_owned[before] = {}
+            total_owned[before][ticker] = quantity
+    return total_owned
+
+
+def filter_non_zero_values(total_owned: dict):
+    sorted_total_owned = sorted(total_owned.items(), key=lambda x: x[0])
+    non_zero_index = 0
+    for i, entry in enumerate(sorted_total_owned):
+        if any(value != 0 for value in entry[1].values()):
+            non_zero_index = i
+            break
+    return sorted_total_owned[non_zero_index:]
+
+
+def filter_non_zero(portfolio_value: dict):
+    empty_dates = []
+    for date, holdings in portfolio_value.items():
+        if all(value == 0 for value in holdings.values()):
+            empty_dates.append(date)
+
+    for date in empty_dates:
+        del portfolio_value[date]
+    return portfolio_value
+
+
+def calculate_portfolio_value(total_owned: dict, market_values: dict):
+    portfolio_value = {}
+    for date, holdings in total_owned:
+        total_value = 0.0
+        for ticker, quantity in holdings.items():
+            if date in market_values and ticker in market_values[date]:
+                ticker_value = quantity * market_values[date][ticker]
+                if date not in portfolio_value:
+                    portfolio_value[date] = {}
+                portfolio_value[date][ticker] = ticker_value
+                total_value += ticker_value
+        portfolio_value[date]["total"] = total_value
+    return portfolio_value
+
+
+@app.post("/portfolio/history", status_code=status.HTTP_201_CREATED)
+def read_portfolio_history(request: Portfolio, params: HistoryParams = Depends()) -> JSONResponse:
+    tickers = list(request.trades.keys())
+    market_data = fetch_market_data(tickers, params)
+    market_values = process_market_data(market_data)
+    if len(market_values) == 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"No data found for {tickers}")
+    total_owned = calculate_total_owned(request.trades, market_values)
+    filtered_total_owned = filter_non_zero_values(total_owned)
+    portfolio_value = calculate_portfolio_value(filtered_total_owned, market_values)
+    response = {
+        "interval": params.interval,
+        "period": params.period,
+        "symbols": tickers,
+        "data": [
+            {
+                "date": entry[0].isoformat(),
+                "portfolio": {ticker: entry[1][ticker] for ticker in entry[1] if ticker != "total"},
+                "total": entry[1]["total"],
+            }
+            for entry in filter_non_zero(portfolio_value).items()
+        ],
+    }
     return JSONResponse(
         status_code=status.HTTP_201_CREATED,
-        content={k.tz_convert("UTC").isoformat(): v for k, v in total_owned.items()},
+        content=response,
     )
 
 
